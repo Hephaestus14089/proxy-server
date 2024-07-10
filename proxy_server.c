@@ -25,7 +25,12 @@ typedef struct {
 unsigned int port_number = PORT;
 unsigned int proxy_socket_fd = 0;
 
-/*void handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_req) {}*/
+void handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_req) {}
+
+int check_http_version(char * http_version) {
+  // check if HTTP version is 1 (or similar to 1)
+  return !strncmp(http_version, "HTTP/1.0", 8) || !strncmp(http_version, "HTTP/1.1", 8);
+}
 
 void handle_client_connection(int * client_socket_fd){
   char * client_req_buffer = (char *)calloc(MAX_BYTES, sizeof(char));
@@ -55,11 +60,11 @@ void handle_client_connection(int * client_socket_fd){
 
     if (ParsedRequest_parse(parsed_req, client_req_buffer, len_client_req)  == 0) {
       if (!strcmp(parsed_req->method, "GET")) {
-        if (parsed_req->host && parsed_req->path && *(parsed_req->version) == 1) {
-          printf("Client req Host: %s\n", parsed_req->host);
-          printf("Client req Path: %s\n", parsed_req->path);
-
-          /*handle_client_request(client_socket_fd, parsed_req);*/
+        if (parsed_req->host && parsed_req->path && check_http_version(parsed_req->version)) {
+          handle_client_request(client_socket_fd, parsed_req);
+        }
+        else {
+          printf("Bad request, or HTTP version other than 1.\n");
         }
       }
       else {
