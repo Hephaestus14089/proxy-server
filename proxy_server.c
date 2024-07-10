@@ -2,13 +2,16 @@
 
 #include <asm-generic/socket.h>
 #include <stdio.h>
+#include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 
-#define MAX_CLIENTS 10
 #define PORT 8000
+#define MAX_CLIENTS 10
+#define MAX_BYTES 4096
 
 void panic(char * msg) {
   perror(msg);
@@ -21,6 +24,62 @@ typedef struct {
 
 unsigned int port_number = PORT;
 unsigned int proxy_socket_fd = 0;
+
+/*void handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_req) {}*/
+
+void handle_client_connection(int * client_socket_fd){
+  char * client_req_buffer = (char *)calloc(MAX_BYTES, sizeof(char));
+  bzero(client_req_buffer, MAX_BYTES);
+
+  unsigned int len_client_req = 0, is_data_recieved = 0;
+
+  do {
+    is_data_recieved = recv(*client_socket_fd, client_req_buffer + len_client_req, MAX_BYTES - len_client_req, 0);
+    len_client_req = strlen(client_req_buffer);
+
+    /* Debug output */
+    printf("Is data recieved: %d\n", is_data_recieved);
+    printf("Client request length: %d\n", len_client_req);
+    printf("Client req buffer :-\n%s\n", client_req_buffer);
+    printf("Is strstr NULL? : %d\n", (strstr(client_req_buffer, "\r\n\r\n") == NULL));
+    /* ************ */
+
+    if (strstr(client_req_buffer, "\r\n\r\n") != NULL) {
+      printf("End of client request reached, breaking loop...\n");
+      break;
+    }
+  } while (is_data_recieved > 0);
+
+  if (is_data_recieved > 0) {
+    struct ParsedRequest * parsed_req = ParsedRequest_create();
+
+    if (ParsedRequest_parse(parsed_req, client_req_buffer, len_client_req)  == 0) {
+      if (!strcmp(parsed_req->method, "GET")) {
+        if (parsed_req->host && parsed_req->path && *(parsed_req->version) == 1) {
+          printf("Client req Host: %s\n", parsed_req->host);
+          printf("Client req Path: %s\n", parsed_req->path);
+
+          /*handle_client_request(client_socket_fd, parsed_req);*/
+        }
+      }
+      else {
+        printf("This application does not support processing any request method apart from 'GET'.\n");
+      }
+    }
+    else {
+      printf("Failed to parse request.\n");
+    }
+
+    ParsedRequest_destroy(parsed_req);
+  }
+  else {
+    printf("Client disconnected.\n");
+  }
+
+  shutdown(*client_socket_fd, SHUT_RDWR);
+  close(*client_socket_fd);
+  free(client_req_buffer);
+}
 
 int main() {
   int client_socket_fd, client_len;
@@ -69,6 +128,8 @@ int main() {
     inet_ntop(AF_INET, &ip_addr, str, INET_ADDRSTRLEN);
     printf("Connection: %s:%d\n", str, ntohs(client_addr.sin_port));
     /* ****************************** */
+
+    handle_client_connection(&client_socket_fd);
   }
 
   close(proxy_socket_fd);
