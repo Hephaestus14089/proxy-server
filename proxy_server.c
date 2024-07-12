@@ -19,13 +19,18 @@ void panic(char * msg) {
   exit(1);
 }
 
+
 typedef struct {
   char * data;
 } cache_element;
 
+
 unsigned int port_number = PORT;
 unsigned int proxy_socket_fd = 0;
 
+
+/* Create a new socket and initiate connection with dest_host_addr at dest_port.
+   Returns a file descriptor for the new socket, or -1 for errors.  */
 int get_dest_socket(char * dest_host_addr, unsigned int dest_port) {
   int dest_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -59,6 +64,7 @@ int get_dest_socket(char * dest_host_addr, unsigned int dest_port) {
   return dest_socket_fd;
 }
 
+
 int handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_req) {
   /* buffer to store the request to be dispatched */
   char * req_buf = malloc(sizeof(char) * MAX_BYTES);
@@ -79,7 +85,7 @@ int handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_
     printf("Unable to unparse ParsedRequest object into buffer.\n");
   }
 
-  // update buffer length due to unparsing of headers
+  /* buffer length must be updated due to unparsing of headers */
   req_buf_len = strlen(req_buf);
 
   unsigned int dest_server_port = (parsed_req->port != NULL) ? atoi(parsed_req->port) : 80;
@@ -120,10 +126,14 @@ int handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_
   return len_data_recieved;
 }
 
+
+/* Checks if the HTTP version of the request is either 1 or similar to 1.
+   Returns 1 if condition is TRUE and 0 if condition is FALSE.  */
 int check_http_version(char * http_version) {
   // check if HTTP version is 1 (or similar to 1)
   return !strncmp(http_version, "HTTP/1.0", 8) || !strncmp(http_version, "HTTP/1.1", 8);
 }
+
 
 void handle_client_connection(int * client_socket_fd){
   char * client_req_buffer = (char *)calloc(MAX_BYTES, sizeof(char));
@@ -178,6 +188,7 @@ void handle_client_connection(int * client_socket_fd){
   close(*client_socket_fd);
   free(client_req_buffer);
 }
+
 
 int main() {
   int client_socket_fd, client_len;
