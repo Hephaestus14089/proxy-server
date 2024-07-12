@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <netdb.h>
 
 #define PORT 8000
 #define MAX_CLIENTS 10
@@ -25,7 +26,99 @@ typedef struct {
 unsigned int port_number = PORT;
 unsigned int proxy_socket_fd = 0;
 
-void handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_req) {}
+int get_dest_socket(char * dest_host_addr, unsigned int dest_port) {
+  int dest_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+  if (dest_socket_fd < 0) {
+    printf("Failed to create socket for destination server.\n");
+    return -1;
+  }
+
+  struct hostent * dest_host = gethostbyname(dest_host_addr);
+
+  if (dest_host == NULL) {
+    fprintf(stderr, "No such host exists.\n");
+    return -1;
+  }
+
+  struct sockaddr_in server_addr;
+  bzero(&server_addr, sizeof(server_addr));
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(dest_port);
+  memcpy(&server_addr.sin_addr.s_addr, dest_host->h_addr, dest_host->h_length);
+
+  /* Debug output */
+  printf("dest_host->h_addr_list (first item): %s\n", dest_host->h_addr);
+  /* ************ */
+
+  if (connect(dest_socket_fd, (struct sockaddr *)&server_addr, (socklen_t)sizeof(server_addr)) < 0) {
+    fprintf(stderr, "Failed to connect to destination server.\n");
+    return -1;
+  }
+
+  return dest_socket_fd;
+}
+
+int handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_req) {
+  /* buffer to store the request to be dispatched */
+  char * req_buf = malloc(sizeof(char) * MAX_BYTES);
+  /* build http request */
+  strcpy(req_buf, "GET ");
+  strcat(req_buf, parsed_req->path);
+  strcat(req_buf, " ");
+  strcat(req_buf, parsed_req->version);
+  strcat(req_buf, "\r\n");
+
+  size_t req_buf_len = strlen(req_buf);
+
+  if (ParsedHeader_set(parsed_req, "Connection", "close") < 0) {
+    printf("Unable to set header key on ParsedRequest object.\n");
+  }
+
+  if (ParsedRequest_unparse_headers(parsed_req, req_buf + req_buf_len, MAX_BYTES - req_buf_len) < 0) {
+    printf("Unable to unparse ParsedRequest object into buffer.\n");
+  }
+
+  // update buffer length due to unparsing of headers
+  req_buf_len = strlen(req_buf);
+
+  unsigned int dest_server_port = (parsed_req->port != NULL) ? atoi(parsed_req->port) : 80;
+
+  int dest_socket_fd = get_dest_socket(parsed_req->host, dest_server_port);
+  if (dest_socket_fd < 0) { return -1; }
+
+  /* debug output */
+  printf("\nRequest buffer:\n%s", req_buf);
+  /* ************ */
+
+  if (send(dest_socket_fd, req_buf, req_buf_len, 0) < 0) {
+    fprintf(stderr, "Failed to send request to destination over socket.\n");
+    return -1;
+  }
+  
+  char * res_buf = req_buf;
+  size_t res_buf_len = MAX_BYTES;
+  bzero(res_buf, res_buf_len);
+
+  int len_data_recieved = recv(dest_socket_fd, res_buf, res_buf_len - 1, 0);
+
+  /* debug output */
+  printf("\nResponse buffer:\n%s", res_buf);
+  /* ************ */
+
+  while (len_data_recieved > 0) {
+    if (send(*client_socket_fd, res_buf, len_data_recieved, 0) < 0) {
+      fprintf(stderr, "Failed to send data to client.\n");
+      return -1;
+    }
+
+    bzero(res_buf, res_buf_len);
+
+    len_data_recieved = recv(dest_socket_fd, res_buf, res_buf_len - 1, 0);
+  }
+
+  return len_data_recieved;
+}
 
 int check_http_version(char * http_version) {
   // check if HTTP version is 1 (or similar to 1)
@@ -43,10 +136,10 @@ void handle_client_connection(int * client_socket_fd){
     len_client_req = strlen(client_req_buffer);
 
     /* Debug output */
-    printf("Is data recieved: %d\n", is_data_recieved);
-    printf("Client request length: %d\n", len_client_req);
-    printf("Client req buffer :-\n%s\n", client_req_buffer);
-    printf("Is strstr NULL? : %d\n", (strstr(client_req_buffer, "\r\n\r\n") == NULL));
+    /*printf("Is data recieved: %d\n", is_data_recieved);*/
+    /*printf("Client request length: %d\n", len_client_req);*/
+    /*printf("Client req buffer :-\n%s\n", client_req_buffer);*/
+    /*printf("Is strstr NULL? : %d\n", (strstr(client_req_buffer, "\r\n\r\n") == NULL));*/
     /* ************ */
 
     if (strstr(client_req_buffer, "\r\n\r\n") != NULL) {
