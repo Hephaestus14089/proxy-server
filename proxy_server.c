@@ -53,7 +53,9 @@ int get_dest_socket(char * dest_host_addr, unsigned int dest_port) {
   memcpy(&server_addr.sin_addr.s_addr, dest_host->h_addr, dest_host->h_length);
 
   /* Debug output */
-  printf("dest_host->h_addr_list (first item): %s\n", dest_host->h_addr);
+  printf("\n");
+  printf("dest_host->h_length: %d\n", dest_host->h_length);
+  printf("dest_host->h_addr_list (first item): %s\n", inet_ntoa(*((struct in_addr *)dest_host->h_addr)));
   /* ************ */
 
   if (connect(dest_socket_fd, (struct sockaddr *)&server_addr, (socklen_t)sizeof(server_addr)) < 0) {
