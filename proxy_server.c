@@ -69,7 +69,7 @@ int get_dest_socket(char * dest_host_addr, unsigned int dest_port) {
 
 int handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_req) {
   /* buffer to store the request to be dispatched */
-  char * req_buf = malloc(sizeof(char) * MAX_BYTES);
+  char * req_buf = calloc(MAX_BYTES, sizeof(char));
   /* build http request */
   strcpy(req_buf, "GET ");
   strcat(req_buf, parsed_req->path);
