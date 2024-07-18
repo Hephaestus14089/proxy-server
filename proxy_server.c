@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <netdb.h>
+#include <time.h>
 
 #define PORT 8000
 #define MAX_CLIENTS 10
@@ -136,6 +137,62 @@ int check_http_version(char * http_version) {
   return !strncmp(http_version, "HTTP/1.0", 8) || !strncmp(http_version, "HTTP/1.1", 8);
 }
 
+/* Sends HTTP response over socket SOCKET_FD according to HTTP status code ERR_CODE.
+   Does nothing if an invalid status code is passed.  */
+void sendErrMsg(int socket_fd, int err_code) {
+  char res_str[1024]; // to store response string
+  char err_desc[50]; // to store error description string
+  char currentTime[50];
+  time_t now = time(0);
+
+	struct tm data = *gmtime(&now);
+	strftime(currentTime,sizeof(currentTime),"%a, %d %b %Y %H:%M:%S %Z", &data);
+
+	switch(err_code) {
+		case 400:
+      snprintf(err_desc, sizeof(err_desc), "400 Bad Request");
+			printf("%s\n", err_desc);
+			break;
+
+		case 403:
+      snprintf(err_desc, sizeof(err_desc), "403 Forbidden");
+			printf("%s\n", err_desc);
+			break;
+
+		case 404:
+      snprintf(err_desc, sizeof(err_desc), "404 Not Found");
+			printf("%s\n", err_desc);
+			break;
+
+		case 500:
+      snprintf(err_desc, sizeof(err_desc), "500 Internal Server Error");
+			printf("%s\n", err_desc);
+			break;
+
+		case 501:
+      snprintf(err_desc, sizeof(err_desc), "501 Not Implemented");
+			printf("%s\n", err_desc);
+			break;
+
+		case 505:
+      snprintf(err_desc, sizeof(err_desc), "505 HTTP Version Not Supported");
+			printf("%s\n", err_desc);
+			break;
+
+    default:
+      fprintf(stderr, "Invalid error status code.\n");
+      return;
+	}
+
+  snprintf(res_str, sizeof(res_str), "HTTP/1.1 %s\r\nConnection: close\r\nContent-Length: 0\r\nServer: Proxy-Server\r\nDate: %s\r\n\r\n", err_desc, currentTime);
+
+  /* Debug output */
+  printf("\n%s\n", res_str);
+  /* ************ */
+
+	send(socket_fd, res_str, strlen(res_str), 0);
+}
+
 
 void handle_client_connection(int * client_socket_fd){
   char * client_req_buffer = (char *)calloc(MAX_BYTES, sizeof(char));
@@ -166,7 +223,9 @@ void handle_client_connection(int * client_socket_fd){
     if (ParsedRequest_parse(parsed_req, client_req_buffer, len_client_req)  == 0) {
       if (!strcmp(parsed_req->method, "GET")) {
         if (parsed_req->host && parsed_req->path && check_http_version(parsed_req->version)) {
-          handle_client_request(client_socket_fd, parsed_req);
+          if (handle_client_request(client_socket_fd, parsed_req) == -1) {
+            sendErrMsg(*client_socket_fd, 500);
+          }
         }
         else {
           printf("Bad request, or HTTP version other than 1.\n");
