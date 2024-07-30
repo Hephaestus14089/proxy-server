@@ -1,6 +1,5 @@
 #include "proxy_parse.h"
 
-#include <asm-generic/socket.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -14,6 +13,8 @@
 #define PORT 8000
 #define MAX_CLIENTS 10
 #define MAX_BYTES 4096
+#define MAX_CACHE_ELEMENT_SIZE 10 * (1 << 10)
+#define MAX_CACHE_SIZE 10 * MAX_CACHE_ELEMENT_SIZE
 
 void panic(char * msg) {
   perror(msg);
@@ -21,14 +22,71 @@ void panic(char * msg) {
 }
 
 
-typedef struct {
+struct cache_element {
   char * data;
-} cache_element;
+  unsigned int data_size;
+  char * url;
+  time_t last_used_at;
+  struct cache_element * next;
+  struct cache_element * prev;
+};
 
+struct cache_list {
+  struct cache_element * head;
+  struct cache_element * tail;
+  unsigned int length;
+};
+
+struct cache_element * find_cache_element(char * url);
+void add_cache_element(char * data, unsigned int data_size, char * url);
+void remove_cache_element();
+void display_cache_list();
+
+struct cache_element * head;
+struct cache_element * tail;
+unsigned int cache_size = 0;
 
 unsigned int port_number = PORT;
 unsigned int proxy_socket_fd = 0;
 
+char * get_url_str(struct ParsedRequest * parsed_req) {
+  unsigned int protocol_len = strlen(parsed_req->protocol);
+  unsigned int host_len = strlen(parsed_req->host);
+  unsigned int port_len = (parsed_req->port) ? strlen(parsed_req->port) : 0;
+  unsigned int path_len = strlen(parsed_req->path);
+
+  // [protocol]://[host]:[port][path]\0
+  char * url_str = malloc(protocol_len + 3 + host_len + 1 + port_len + path_len + 1);
+  
+  /* build url string */
+  unsigned int idx = 0;
+
+  for (unsigned int i = 0; i < protocol_len; i++) {
+    url_str[idx++] = parsed_req->protocol[i];
+  }
+  strcpy((url_str + idx), "://");
+  idx += 3;
+
+  for (unsigned int i = 0; i < host_len; i++) {
+    url_str[idx++] = parsed_req->host[i];
+  }
+
+  if (port_len != 0) {
+    url_str[idx++] = ':';
+  
+    for (unsigned int i = 0; i < port_len; i++) {
+      url_str[idx++] = parsed_req->port[i];
+    }
+  }
+
+  for (unsigned int i = 0; i < path_len; i++) {
+    url_str[idx++] = parsed_req->path[i];
+  }
+
+  url_str[idx++] = '\0';
+
+  return url_str;
+}
 
 /* Create a new socket and initiate connection with dest_host_addr at dest_port.
    Returns a file descriptor for the new socket, or -1 for errors.  */
@@ -54,9 +112,9 @@ int get_dest_socket(char * dest_host_addr, unsigned int dest_port) {
   memcpy(&server_addr.sin_addr.s_addr, dest_host->h_addr, dest_host->h_length);
 
   /* Debug output */
-  printf("\n");
-  printf("dest_host->h_length: %d\n", dest_host->h_length);
-  printf("dest_host->h_addr_list (first item): %s\n", inet_ntoa(*((struct in_addr *)dest_host->h_addr)));
+  /*printf("\n");*/
+  /*printf("dest_host->h_length: %d\n", dest_host->h_length);*/
+  /*printf("dest_host->h_addr_list (first item): %s\n", inet_ntoa(*((struct in_addr *)dest_host->h_addr)));*/
   /* ************ */
 
   if (connect(dest_socket_fd, (struct sockaddr *)&server_addr, (socklen_t)sizeof(server_addr)) < 0) {
@@ -69,6 +127,40 @@ int get_dest_socket(char * dest_host_addr, unsigned int dest_port) {
 
 
 int handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_req) {
+  /* Debug output */
+  printf("\n");
+  printf("parsed_req->host : %s\n", parsed_req->host);
+  printf("parsed_req->path : %s\n", parsed_req->path);
+  printf("parsed_req->protocol : %s\n", parsed_req->protocol);
+  printf("\n");
+  /* ************ */
+
+  /* get url string to be used while storing cache */
+  char * url_str = get_url_str(parsed_req);
+
+  /* Debug output */
+  printf("url_str: %s\n", url_str);
+  /* ************ */
+
+  /* check if present in cache */
+  struct cache_element * element = find_cache_element(url_str);
+
+  if (element != NULL) {
+    /* Debug output */
+    /*printf("element->data_size: %d\n", element->data_size);*/
+    /*printf("element->data:\n%s\n", element->data);*/
+    /* ************ */
+    
+    if (send(*client_socket_fd, element->data, element->data_size, 0) < 0) {
+      fprintf(stderr, "Failed to send data to client.\n");
+      return -1;
+    }
+
+    display_cache_list();  // debug output
+
+    return element->data_size;
+  }
+
   /* buffer to store the request to be dispatched */
   char * req_buf = calloc(MAX_BYTES, sizeof(char));
   /* build http request */
@@ -97,7 +189,7 @@ int handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_
   if (dest_socket_fd < 0) { return -1; }
 
   /* debug output */
-  printf("\nRequest buffer:\n%s", req_buf);
+  /*printf("\nRequest buffer:\n%s", req_buf);*/
   /* ************ */
 
   if (send(dest_socket_fd, req_buf, req_buf_len, 0) < 0) {
@@ -111,11 +203,25 @@ int handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_
 
   int len_data_recieved = recv(dest_socket_fd, res_buf, res_buf_len - 1, 0);
 
+  /* initialise buffer to store response for caching */
+  char * cache_buf = NULL;
+  unsigned int cache_buf_idx = 0;
+
   /* debug output */
-  printf("\nResponse buffer:\n%s", res_buf);
+  /*printf("\nlen_data_recieved: %d\n", len_data_recieved);*/
+  /*printf("\nResponse buffer:\n%s", res_buf);*/
   /* ************ */
 
   while (len_data_recieved > 0) {
+    cache_buf = realloc(cache_buf, (cache_buf_idx + len_data_recieved));
+    memcpy((cache_buf + cache_buf_idx), res_buf, len_data_recieved);
+    cache_buf_idx += len_data_recieved;
+
+    /* Debug output */
+    /*printf("\ncache_buf:\n%s\n", cache_buf);*/
+    /*printf("\n");*/
+    /* ************ */
+    
     if (send(*client_socket_fd, res_buf, len_data_recieved, 0) < 0) {
       fprintf(stderr, "Failed to send data to client.\n");
       return -1;
@@ -124,9 +230,28 @@ int handle_client_request(int * client_socket_fd, struct ParsedRequest * parsed_
     bzero(res_buf, res_buf_len);
 
     len_data_recieved = recv(dest_socket_fd, res_buf, res_buf_len - 1, 0);
+
+    /* debug output */
+    /*printf("\nlen_data_recieved: %d\n", len_data_recieved);*/
+    if (len_data_recieved == 0) {
+      printf("End of response reached... exiting loop.\n\n");
+    }
+    /*else {  */
+    /*  printf("\nres_buf:\n%s\n", res_buf);*/
+    /*}*/
+    /* ************ */
   }
 
-  return len_data_recieved;
+  /* append null character */
+  cache_buf[cache_buf_idx++] = '\0';
+
+  add_cache_element(cache_buf, cache_buf_idx, url_str);
+
+  /* debug output */
+  display_cache_list();
+  /* ************ */
+
+  return cache_buf_idx;
 }
 
 
@@ -305,4 +430,131 @@ int main() {
   close(proxy_socket_fd);
 
   return 0;
+}
+
+/* Returns pointer to cache_element associated to the URL,
+   if present in cache, else returns NULL.  */
+struct cache_element * find_cache_element(char * url) {
+  struct cache_element * curr = head;
+
+  while (curr != NULL) {
+    if (!strcmp(curr->url, url)) {
+      printf("url found in cache.\n");
+      printf("last used at: %ld\n", curr->last_used_at);
+      /* update last used time */
+      curr->last_used_at = time(NULL);
+    
+      /* move to head if not already at head */
+      if (curr != head) {
+        /* adjust tail if curr is last but not only element */
+        if (curr == tail) {
+          tail = curr->prev;
+        }
+
+        (curr->prev)->next = curr->next;
+        curr->prev = NULL;
+        
+        head->prev = curr;
+        curr->next = head;
+
+        head = curr;
+      }
+
+      return head;
+    }
+
+    curr = curr->next;
+  }
+
+  printf("url not found in cache.\n");
+  return NULL;
+}
+
+/* frees memory used by the cache_element  */
+void free_cache_element(struct cache_element * element) {
+  free(element->data);
+  free(element->url);
+  free(element);
+}
+
+/* Adds cache_element to the cache.  */
+void add_cache_element(char * data, unsigned int data_size, char * url) {
+  unsigned int element_size = 1 + data_size + strlen(url) + sizeof(struct cache_element);
+
+  if (element_size > MAX_CACHE_ELEMENT_SIZE) {
+    printf("Will not be stored in cache as data size exceeds cache element size limit.\n");
+    return;
+  }
+  
+  while (cache_size + element_size > MAX_CACHE_SIZE) {
+    remove_cache_element();
+  }
+
+  struct cache_element * element = malloc(sizeof(struct cache_element));
+  element->url = malloc(strlen(url) + 1);
+  strcpy(element->url, url);
+  element->data = malloc(data_size + 1);
+  strcpy(element->data, data);
+  element->data_size = data_size;
+  element->last_used_at = time(NULL);
+
+  element->prev = NULL;
+  element->next = head;
+
+  /* if only element in cache */
+  if (tail == NULL) {
+    tail = element;
+  }
+  else {
+    head->prev = element;
+  }
+
+  head = element;
+
+  /* update cache size */
+  cache_size += element_size;
+}
+
+/* Removes least recently used element from the cache.  */
+void remove_cache_element() {
+  if (head == NULL) {
+    printf("Unable to remove from cache as cache is empty.\n");
+    return;
+  }
+
+  /* least recently used cache element will always be at tail */
+  struct cache_element * temp = tail;
+
+  printf("Removing cache element with url: %s\n", tail->url);
+
+  if (head == tail) { // only element in cache
+    head = NULL;
+    tail = NULL;
+  }
+  else {
+    (tail->prev)->next = NULL;
+    tail = tail->prev;
+  }
+
+  /* update cache size */
+  unsigned int total_element_size = temp->data_size + strlen(temp->url) + 1 + sizeof(struct cache_element);
+  cache_size -= total_element_size;
+
+  free_cache_element(temp);
+}
+
+void display_cache_list() {
+  struct cache_element * ptr = head;
+
+  printf("Cache list :-\n");
+
+  while (ptr != NULL) {
+    printf("url: %s\n", ptr->url);
+    /*printf("data:\n%s\n", ptr->data);*/
+    printf("last used at: %ld\n", ptr->last_used_at);
+    printf("\n");
+    ptr = ptr->next;
+  }
+
+  printf("\n");
 }
