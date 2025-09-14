@@ -50,6 +50,8 @@ struct cache_element * tail;
 unsigned int cache_size = 0;
 
 sem_t semaphore;
+pthread_mutex_t lock;
+
 unsigned int port_number = PORT;
 unsigned int proxy_socket_fd = 0;
 
@@ -390,6 +392,8 @@ int main() {
   struct sockaddr_in server_addr, client_addr;
 
   sem_init(&semaphore, 0, MAX_CLIENTS);
+  pthread_mutex_init(&lock, NULL);
+
   printf("Starting proxy server at port %d...\n", port_number);
 
   if ((proxy_socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -449,6 +453,8 @@ int main() {
 /* Returns pointer to cache_element associated to the URL,
    if present in cache, else returns NULL.  */
 struct cache_element * find_cache_element(char * url) {
+  pthread_mutex_lock(&lock);
+
   struct cache_element * curr = head;
 
   while (curr != NULL) {
@@ -474,6 +480,7 @@ struct cache_element * find_cache_element(char * url) {
         head = curr;
       }
 
+      pthread_mutex_unlock(&lock);
       return head;
     }
 
@@ -481,6 +488,7 @@ struct cache_element * find_cache_element(char * url) {
   }
 
   printf("url not found in cache.\n");
+  pthread_mutex_unlock(&lock);
   return NULL;
 }
 
@@ -493,9 +501,12 @@ void free_cache_element(struct cache_element * element) {
 
 /* Adds cache_element to the cache.  */
 void add_cache_element(char * data, unsigned int data_size, char * url) {
+  pthread_mutex_lock(&lock);
+
   unsigned int element_size = 1 + data_size + strlen(url) + sizeof(struct cache_element);
 
   if (element_size > MAX_CACHE_ELEMENT_SIZE) {
+    pthread_mutex_unlock(&lock);
     printf("Will not be stored in cache as data size exceeds cache element size limit.\n");
     return;
   }
@@ -527,10 +538,18 @@ void add_cache_element(char * data, unsigned int data_size, char * url) {
 
   /* update cache size */
   cache_size += element_size;
+
+  pthread_mutex_unlock(&lock);
 }
 
 /* Removes least recently used element from the cache.  */
 void remove_cache_element() {
+  /* This function does not need mutex locking and unlocking
+     as it is only invoked by add_cache_element(char*, int char*)
+     function when the cache size exceeds the limit. 
+     So, mutex is already locked by the invoking function and
+     will be unlocked by it. */
+
   if (head == NULL) {
     printf("Unable to remove from cache as cache is empty.\n");
     return;
