@@ -1,5 +1,6 @@
 #include "proxy_parse.h"
 
+#include <bits/pthreadtypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -9,6 +10,8 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <time.h>
+#include <pthread.h>
+#include <semaphore.h>
 
 #define PORT 8000
 #define MAX_CLIENTS 10
@@ -46,6 +49,7 @@ struct cache_element * head;
 struct cache_element * tail;
 unsigned int cache_size = 0;
 
+sem_t semaphore;
 unsigned int port_number = PORT;
 unsigned int proxy_socket_fd = 0;
 
@@ -319,7 +323,9 @@ void sendErrMsg(int socket_fd, int err_code) {
 }
 
 
-void handle_client_connection(int * client_socket_fd){
+void handle_client_connection(int * client_socket_fd) {
+  sem_wait(&semaphore);
+
   char * client_req_buffer = (char *)calloc(MAX_BYTES, sizeof(char));
   bzero(client_req_buffer, MAX_BYTES);
 
@@ -372,6 +378,9 @@ void handle_client_connection(int * client_socket_fd){
 
   shutdown(*client_socket_fd, SHUT_RDWR);
   close(*client_socket_fd);
+
+  sem_post(&semaphore);
+
   free(client_req_buffer);
 }
 
@@ -380,6 +389,7 @@ int main() {
   int client_socket_fd, client_len;
   struct sockaddr_in server_addr, client_addr;
 
+  sem_init(&semaphore, 0, MAX_CLIENTS);
   printf("Starting proxy server at port %d...\n", port_number);
 
   if ((proxy_socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -409,6 +419,9 @@ int main() {
     panic("Failed to listen");
   }
 
+  pthread_t active_threads[MAX_CLIENTS];
+  unsigned int current_thread_idx;
+
   while (1) {
     bzero((char *)&client_addr, sizeof(client_addr));
     client_len = sizeof(client_addr);
@@ -424,7 +437,8 @@ int main() {
     printf("Connection: %s:%d\n", str, ntohs(client_addr.sin_port));
     /* ****************************** */
 
-    handle_client_connection(&client_socket_fd);
+    pthread_create(&active_threads[current_thread_idx++], NULL, (void *)handle_client_connection, (void *)&client_socket_fd);
+    current_thread_idx %= MAX_CLIENTS;
   }
 
   close(proxy_socket_fd);
